@@ -20,13 +20,14 @@
 //!      Enrollment is self-service: TOFU `claim` for the first device, then request / approve / revoke.
 
 mod auth;
+mod secrets;
 mod store;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
@@ -35,6 +36,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tower_http::cors::CorsLayer;
 
+use secrets::SecretStore;
 use store::{DeviceStore, RevokeOutcome};
 
 const CONSOLE_HTML: &str = include_str!("console.html");
@@ -48,6 +50,9 @@ struct AppState {
     /// is set; otherwise a fresh random secret is minted per boot (in-flight challenges from before a
     /// restart simply expire). For multi-instance / restart-stable verification, set the env.
     server_secret: Arc<Vec<u8>>,
+    /// The operator's immutable, boot-loaded named-secret map (from `CE_AUTH_SECRETS`). Served by
+    /// `GET /secret/:name` to an enrolled admin device. Values are never logged.
+    secret_store: Arc<SecretStore>,
 }
 
 #[tokio::main]
@@ -68,6 +73,11 @@ async fn main() -> Result<()> {
     let devices = Arc::new(DeviceStore::open(&data_dir, &seed)?);
     let server_secret = server_secret_from_env();
 
+    // Named secrets are loaded ONCE at boot from CE_AUTH_SECRETS and are immutable thereafter. Only
+    // the count of names is logged here — values are never logged anywhere.
+    let secret_store = SecretStore::from_env(&std::env::var("CE_AUTH_SECRETS").unwrap_or_default());
+    tracing::info!(count = secret_store.len(), "named secrets loaded for SECRET-DELIVERY");
+
     if std::env::var("CE_AUTH_SERVER_SECRET").map(|s| s.is_empty()).unwrap_or(true) {
         tracing::warn!(
             "CE_AUTH_SERVER_SECRET is unset — using a per-boot ephemeral nonce key. Challenges do \
@@ -86,6 +96,7 @@ async fn main() -> Result<()> {
     let state = AppState {
         devices,
         server_secret: Arc::new(server_secret),
+        secret_store: Arc::new(secret_store),
     };
 
     let app = router(state);
@@ -118,6 +129,8 @@ fn router(state: AppState) -> Router {
         .route("/devices", get(devices_list))
         .route("/devices/approve", post(devices_approve))
         .route("/devices/revoke", post(devices_revoke))
+        // SECRET-DELIVERY: hand a named secret to an enrolled admin device (admin device-auth).
+        .route("/secret/:name", get(secret))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -446,6 +459,35 @@ async fn devices_revoke(
     }
 }
 
+// ---- SECRET-DELIVERY --------------------------------------------------------
+
+/// `GET /secret/:name` — ADMIN ONLY (same device-auth as `/me` / `/devices`: prove possession of an
+/// ENROLLED admin device key over a fresh `aud=ce-auth` challenge). On success returns
+/// `200 { "name": <name>, "value": <secret> }`. Bad/missing/expired signature or a non-admin device
+/// -> 401; a name not in the boot-loaded secret map -> 404. The secret VALUE is never logged.
+async fn secret(
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    // Authorize FIRST so an unauthorized caller cannot probe which names exist (no 404/200 oracle).
+    if let Err(resp) = require_admin(&st, &headers) {
+        return resp;
+    }
+    match st.secret_store.get(&name) {
+        Some(value) => (
+            StatusCode::OK,
+            Json(json!({ "name": name, "value": value })),
+        )
+            .into_response(),
+        None => {
+            // Name is not a secret — safe to log (it is not a secret value).
+            tracing::debug!(%name, "secret request for unknown name");
+            (StatusCode::NOT_FOUND, Json(json!({"error": "unknown secret"}))).into_response()
+        }
+    }
+}
+
 async fn serve_console() -> impl IntoResponse {
     // The HTML itself is public; every data call behind it is gated by ce-secrets device-auth. The
     // page holds a device key in localStorage, fetches /challenge, signs it, and sends the
@@ -474,6 +516,8 @@ mod tests {
     use ce_secrets_rs::{sign_challenge, DeviceKey};
 
     const SERVER_SECRET: &[u8] = b"test-server-secret";
+    /// Named secrets the test state is booted with (mirrors `CE_AUTH_SECRETS`).
+    const TEST_SECRETS: &str = "api-key=s3cr3t-value;db-url=postgres://x";
 
     fn temp_dir() -> std::path::PathBuf {
         let mut d = std::env::temp_dir();
@@ -522,6 +566,7 @@ mod tests {
         AppState {
             devices: Arc::new(DeviceStore::open(&dir, &seed).expect("open device store")),
             server_secret: Arc::new(SERVER_SECRET.to_vec()),
+            secret_store: Arc::new(SecretStore::from_env(TEST_SECRETS)),
         }
     }
 
@@ -530,6 +575,7 @@ mod tests {
         AppState {
             devices: Arc::new(DeviceStore::open(&dir, &[]).expect("open device store")),
             server_secret: Arc::new(SERVER_SECRET.to_vec()),
+            secret_store: Arc::new(SecretStore::from_env(TEST_SECRETS)),
         }
     }
 
@@ -922,6 +968,7 @@ mod tests {
         let st2 = AppState {
             devices: Arc::new(DeviceStore::open(&dir, &[]).unwrap()),
             server_secret: Arc::new(SERVER_SECRET.to_vec()),
+            secret_store: Arc::new(SecretStore::from_env(TEST_SECRETS)),
         };
         assert!(st2.devices.is_admin(&requester.id));
         assert!(st2.devices.is_admin(&test_device().id));
@@ -937,6 +984,140 @@ mod tests {
         .await;
         assert_eq!(v["ok"], true);
         assert_eq!(v["role"], "admin");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- SECRET-DELIVERY: GET /secret/:name ----
+
+    /// Issue a `GET /secret/<name>` with the given (already-signed console) headers.
+    async fn get_secret(
+        app: &Router,
+        name: &str,
+        headers: &[(String, String)],
+    ) -> axum::response::Response {
+        let req = with_headers(Request::builder().uri(format!("/secret/{name}")), headers)
+            .body(Body::empty())
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn admin_gets_secret_value() {
+        let dir = temp_dir();
+        let app = router(state_with(dir.clone()));
+        let admin = test_device();
+        let headers = signed_console_headers(&app, &admin).await;
+        let resp = get_secret(&app, "api-key", &headers).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        assert_eq!(j["name"], "api-key");
+        assert_eq!(j["value"], "s3cr3t-value");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn admin_unknown_name_404() {
+        let dir = temp_dir();
+        let app = router(state_with(dir.clone()));
+        let admin = test_device();
+        let headers = signed_console_headers(&app, &admin).await;
+        let resp = get_secret(&app, "does-not-exist", &headers).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn unenrolled_device_401() {
+        // A real, valid signature from a device that is NOT in the registry -> 401 (not admin).
+        let dir = temp_dir();
+        let app = router(state_with(dir.clone()));
+        let stranger = second_device();
+        let headers = signed_console_headers(&app, &stranger).await;
+        let resp = get_secret(&app, "api-key", &headers).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pending_device_401() {
+        // A device enrolled as pending (key-valid, real enrolled pub) but not approved -> 401.
+        let dir = temp_dir();
+        let st = state_with(dir.clone());
+        let pending = second_device();
+        st.devices.request(&pending.id, &compact_pub(&pending), "phone").unwrap();
+        let app = router(st);
+        let headers = signed_console_headers(&app, &pending).await;
+        let resp = get_secret(&app, "api-key", &headers).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn no_headers_401() {
+        let dir = temp_dir();
+        let app = router(state_with(dir.clone()));
+        let req = Request::builder().uri("/secret/api-key").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn bad_signature_401() {
+        let dir = temp_dir();
+        let app = router(state_with(dir.clone()));
+        let admin = test_device();
+        let mut headers = signed_console_headers(&app, &admin).await;
+        // Tamper the signature header (x-ce-auth is index 1).
+        let sig = &mut headers[1].1;
+        let last = sig.pop().unwrap();
+        sig.push(if last == 'A' { 'B' } else { 'A' });
+        let resp = get_secret(&app, "api-key", &headers).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn expired_challenge_401() {
+        // A correctly-derived (aud-bound) nonce + valid sig for a ts 10 minutes in the past -> 401.
+        let dir = temp_dir();
+        let app = router(state_with(dir.clone()));
+        let admin = test_device();
+        let aud = auth::CONSOLE_AUD;
+
+        let old_ms = ce_secrets_rs::now_unix_ms() - 600_000;
+        let old_secs = old_ms / 1000;
+        let days = old_secs.div_euclid(86_400) + 719_468;
+        let tod = old_secs.rem_euclid(86_400);
+        let (y, mo, d) = {
+            let z = days;
+            let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+            let doe = z - era * 146_097;
+            let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+            let y = yoe + era * 400;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let dd = doy - (153 * mp + 2) / 5 + 1;
+            let m = if mp < 10 { mp + 3 } else { mp - 9 };
+            (if m <= 2 { y + 1 } else { y }, m, dd)
+        };
+        let old_ts = format!(
+            "{y:04}-{mo:02}-{d:02}T{:02}:{:02}:{:02}.000Z",
+            tod / 3600,
+            (tod % 3600) / 60,
+            tod % 60
+        );
+        let nonce = ce_secrets_rs::make_nonce(&auth::aud_secret(SERVER_SECRET, aud), &old_ts);
+        let sig = sign_challenge(&admin, aud, &nonce, &old_ts).unwrap();
+        let headers = vec![
+            ("x-ce-device-id".to_string(), admin.id.clone()),
+            ("x-ce-auth".to_string(), sig),
+            ("x-ce-aud".to_string(), aud.to_string()),
+            ("x-ce-nonce".to_string(), nonce),
+            ("x-ce-ts".to_string(), old_ts),
+        ];
+        let resp = get_secret(&app, "api-key", &headers).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
