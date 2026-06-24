@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex,nofollow" />
+<title>ce-auth // operator console</title>
+<style>
+  :root {
+    --bg: #07090d;
+    --panel: #0c1119;
+    --panel-2: #0f1623;
+    --line: #1b2436;
+    --ink: #c8d4e3;
+    --ink-dim: #6b7a90;
+    --accent: #2bd4a8;
+    --red: #ff3b5c;
+    --amber: #ffb02e;
+    --blue: #4aa8ff;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(43,212,168,0.07), transparent 60%),
+      radial-gradient(900px 500px at -10% 110%, rgba(74,168,255,0.06), transparent 55%),
+      var(--bg);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+  header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
+    position: sticky; top: 0; z-index: 5;
+    backdrop-filter: blur(6px);
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; }
+  .brand b { color: #fff; letter-spacing: 2px; font-weight: 700; }
+  .brand span { color: var(--ink-dim); letter-spacing: 3px; text-transform: uppercase; font-size: 10px; }
+  .pulse {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 10px var(--accent);
+    animation: pulse 2.2s infinite ease-in-out;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
+  .spacer { flex: 1; }
+  .me { color: var(--ink-dim); }
+  .me b { color: var(--ink); }
+  button {
+    font-family: var(--mono); font-size: 12px;
+    color: var(--ink); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 7px 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: #fff; }
+  button.danger:hover { border-color: var(--red); }
+  select, input {
+    font-family: var(--mono); font-size: 12px;
+    color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px;
+  }
+  main { padding: 20px; }
+  .err { color: var(--red); min-height: 16px; }
+  .gate { max-width: 540px; margin: 12vh auto; padding: 28px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--panel); }
+  .gate h1 { font-size: 15px; letter-spacing: 2px; color: #fff; }
+  .gate p { color: var(--ink-dim); line-height: 1.6; }
+  .enroll { margin-top: 18px; padding: 14px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel-2); }
+  .enroll .lbl { color: var(--ink-dim); text-transform: uppercase; font-size: 10px; letter-spacing: 1px; }
+  .enroll code { display: block; margin: 6px 0 14px; padding: 8px 10px; border-radius: 6px;
+    background: #060810; color: var(--accent); word-break: break-all; border: 1px solid var(--line); }
+  .enroll input { width: 100%; margin: 10px 0; padding: 10px; }
+  .dev-wrap { display: flex; gap: 18px; flex-wrap: wrap; margin: 14px 0;
+    padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  .dev-col { flex: 1; min-width: 280px; }
+  .dev-h { color: var(--ink-dim); text-transform: uppercase; font-size: 10px; letter-spacing: 1px;
+    margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  .dev-row { display: flex; align-items: center; gap: 10px; padding: 8px 0;
+    border-bottom: 1px solid rgba(27,36,54,0.6); }
+  .dev-id { flex: 1; color: var(--ink); word-break: break-all; font-size: 12px; }
+  .dev-actions { display: flex; gap: 6px; }
+  .dev-actions button { padding: 5px 10px; font-size: 11px; }
+  .ip { color: var(--ink-dim); }
+  .blurb { color: var(--ink-dim); line-height: 1.6; max-width: 760px; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+// ce-auth operator console — ce-secrets challenge-response, inlined WebCrypto (byte-exact with the
+// canonical crypto.mjs / auth.mjs and the Rust SDK). The operator's device key lives in localStorage.
+// Enrollment is SELF-SERVICE: the first device to open the console Claims it (TOFU); any later device
+// Requests access and an existing admin Approves it in-console. No env editing, no redeploy, no pasted
+// token, ever. The console authenticates with aud="ce-auth"; apps use their own aud against /verify.
+const LS_DEVICE = "ce-auth-device-key";
+const AUD = "ce-auth";
+const subtle = globalThis.crypto.subtle;
+let device = null;   // { ecdhPriv, ecdhPub, ecdsaPriv, ecdsaPub, id }
+
+// ---- encoding (mirror crypto.mjs b64/hex exactly) ----
+const b64u = {
+  enc(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = "";
+    for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); },
+  dec(str) { const s = str.replace(/-/g, "+").replace(/_/g, "/");
+    const bin = atob(s + "===".slice((s.length + 3) % 4));
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; },
+};
+const hexenc = (buf) => [...(buf instanceof Uint8Array ? buf : new Uint8Array(buf))]
+  .map((x) => x.toString(16).padStart(2, "0")).join("");
+const utf8 = (s) => new TextEncoder().encode(s);
+// trap #5: top-level keys sorted, no whitespace — identical bytes to the Rust verifier.
+const stableStringify = (o) => JSON.stringify(o, Object.keys(o).sort());
+
+// ---- device key: ECDH + ECDSA P-256, JWK-serialized, deviceId = hex(sha256([x,y,x,y]))[..16] ----
+async function deviceIdOf(ecdhPub, ecdsaPub) {
+  const data = utf8(JSON.stringify([ecdhPub.x, ecdhPub.y, ecdsaPub.x, ecdsaPub.y]));
+  return hexenc(new Uint8Array(await subtle.digest("SHA-256", data))).slice(0, 16);
+}
+async function generateDevice() {
+  const ecdh = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const ecdsa = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const dk = {
+    ecdhPriv: await subtle.exportKey("jwk", ecdh.privateKey),
+    ecdhPub: await subtle.exportKey("jwk", ecdh.publicKey),
+    ecdsaPriv: await subtle.exportKey("jwk", ecdsa.privateKey),
+    ecdsaPub: await subtle.exportKey("jwk", ecdsa.publicKey),
+  };
+  dk.id = await deviceIdOf(dk.ecdhPub, dk.ecdsaPub);
+  return dk;
+}
+async function loadOrCreateDevice() {
+  const saved = localStorage.getItem(LS_DEVICE);
+  if (saved) { try { return JSON.parse(saved); } catch (e) {} }
+  const dk = await generateDevice();
+  localStorage.setItem(LS_DEVICE, JSON.stringify(dk));
+  return dk;
+}
+// The compact ECDSA SEC1 pub this device advertises in claim/request bodies so the server can both
+// verify our signature and persist the key: b64url(04 || ecdsaPub.x || ecdsaPub.y).
+function compactPub(dk) {
+  const x = b64u.dec(dk.ecdsaPub.x), y = b64u.dec(dk.ecdsaPub.y);
+  const raw = new Uint8Array(65); raw[0] = 0x04; raw.set(x, 1); raw.set(y, 33);
+  return b64u.enc(raw);
+}
+// Sign the flat canonical body { aud, deviceId, nonce, ts } -> base64url(raw P1363 64-byte sig).
+async function signChallenge(dk, aud, nonce, ts) {
+  const priv = await subtle.importKey("jwk", dk.ecdsaPriv, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  const body = { aud: String(aud), deviceId: String(dk.id), nonce: String(nonce), ts: String(ts) };
+  const data = utf8(stableStringify(body));
+  const sig = new Uint8Array(await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, priv, data));
+  return b64u.enc(sig);
+}
+
+function h(tag, attrs, kids) {
+  const e = document.createElement(tag);
+  for (const k in (attrs||{})) {
+    if (k === "class") e.className = attrs[k];
+    else if (k === "html") e.innerHTML = attrs[k];
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), attrs[k]);
+    else e.setAttribute(k, attrs[k]);
+  }
+  for (const c of (kids||[])) e.append(c.nodeType ? c : document.createTextNode(c));
+  return e;
+}
+
+// Attach a freshly signed challenge to a console request. Fetches /challenge?aud=ce-auth, signs it
+// with the device key, and sets the x-ce-device-id / x-ce-auth / x-ce-aud / x-ce-nonce / x-ce-ts
+// headers. (Apps use POST /verify with their OWN aud instead; this path is the console's self-auth.)
+async function api(path, opts) {
+  opts = opts || {};
+  const cr = await fetch("/challenge?aud=" + encodeURIComponent(AUD));
+  if (!cr.ok) throw new Error("challenge failed");
+  const ch = await cr.json();
+  const sig = await signChallenge(device, ch.aud, ch.nonce, ch.ts);
+  opts.headers = Object.assign({}, opts.headers, {
+    "x-ce-device-id": device.id,
+    "x-ce-auth": sig,
+    "x-ce-aud": ch.aud,
+    "x-ce-nonce": ch.nonce,
+    "x-ce-ts": ch.ts,
+  });
+  return fetch(path, opts);
+}
+
+// The first-run screen: the registry has ZERO admins, so this (key-valid) device may CLAIM the
+// console and become the first operator device (TOFU). Safe because the operator claims right after
+// deploy.
+function claimScreen(msg) {
+  const app = document.getElementById("app");
+  app.innerHTML = "";
+  const id = device ? device.id : "(generating…)";
+  app.append(h("div", { class: "gate" }, [
+    h("h1", {}, ["ce-auth // first run"]),
+    h("p", {}, [
+      "No operator device is enrolled yet. This browser holds a fresh device key — claim ce-auth to ",
+      "become its first admin. From then on, every app that delegates auth to ce-auth trusts this ",
+      "device, and you approve any further devices right here. No server config, no redeploy.",
+    ]),
+    h("div", { class: "err" }, [msg || ""]),
+    h("div", { class: "enroll" }, [
+      h("div", { class: "lbl" }, ["this device id"]),
+      h("code", {}, [id]),
+    ]),
+    h("button", { onclick: doClaim }, ["claim this console"]),
+  ]));
+}
+
+// The "admins exist but you are not one" screen: this device can REQUEST access; an existing admin
+// then approves it in their Devices panel. We show the device id so the operator can dictate it.
+function requestScreen(msg, role) {
+  const app = document.getElementById("app");
+  app.innerHTML = "";
+  const id = device ? device.id : "(generating…)";
+  const pendingNote = role === "pending"
+    ? "Your request is recorded and pending. Ask an existing admin to approve this device id."
+    : "";
+  app.append(h("div", { class: "gate" }, [
+    h("h1", {}, ["ce-auth // request access"]),
+    h("p", {}, [
+      "ce-auth already has an operator device. Request access from this device — an existing admin ",
+      "approves it in their Devices panel. No token, no env editing.",
+    ]),
+    h("div", { class: "err" }, [msg || ""]),
+    h("div", { class: "enroll" }, [
+      h("div", { class: "lbl" }, ["label (optional)"]),
+      h("input", { id: "req-label", placeholder: "e.g. leif-laptop" }),
+      h("div", { class: "lbl", style: "margin-top:10px" }, ["your device id — give this to an admin"]),
+      h("code", {}, [id]),
+    ]),
+    h("div", { class: "ip", style: "margin:10px 0 14px" }, [pendingNote]),
+    h("button", { onclick: doRequest }, [role === "pending" ? "re-send request" : "request access"]),
+    h("button", { onclick: boot, style: "margin-left:8px" }, ["refresh"]),
+  ]));
+}
+
+// POST /claim with this device's pub. On success this device is now admin -> boot into console.
+async function doClaim() {
+  try {
+    const r = await api("/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pub: compactPub(device) }),
+    });
+    if (r.status === 409) { boot(); return; }
+    if (!r.ok) { claimScreen("claim failed"); return; }
+    boot();
+  } catch (e) { claimScreen("could not reach the server"); }
+}
+
+// POST /request with this device's pub + optional label. Records us as pending.
+async function doRequest() {
+  const labelEl = document.getElementById("req-label");
+  const label = labelEl ? labelEl.value.trim() : "";
+  try {
+    const r = await api("/request", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pub: compactPub(device), label }),
+    });
+    if (!r.ok) { requestScreen("request failed", "none"); return; }
+    requestScreen("request sent — pending an admin's approval", "pending");
+  } catch (e) { requestScreen("could not reach the server", "none"); }
+}
+
+// ---- The operator console: just the Devices panel (admins + pending, approve / revoke) ----
+function renderShell() {
+  const app = document.getElementById("app");
+  app.innerHTML = "";
+  app.append(
+    h("header", {}, [
+      h("div", { class: "pulse" }, []),
+      h("div", { class: "brand" }, [ h("b", {}, ["CE-AUTH"]), h("span", {}, ["operator console"]) ]),
+      h("div", { class: "spacer" }, []),
+      h("div", { class: "me" }, [ "this device ", h("b", { id: "me-id" }, [device ? device.id : ""]) ]),
+      h("button", { onclick: loadDevices }, ["refresh"]),
+    ]),
+    h("main", {}, [
+      h("div", { class: "blurb" }, [
+        "ce-auth is the central home for operator device-auth. Apps delegate to it: they fetch a ",
+        "challenge bound to their own audience and post the signed result to /verify, which answers ",
+        "whether the device is the operator. Manage the operator's devices below.",
+      ]),
+      h("div", { id: "devices-panel" }, []),
+    ]),
+  );
+}
+
+async function loadDevices() {
+  const panel = document.getElementById("devices-panel");
+  if (!panel) return;
+  let j;
+  try {
+    const r = await api("/devices");
+    // Our admin role was revoked while the console was open -> drop back to the access flow.
+    if (r.status === 401) { boot(); return; }
+    if (!r.ok) { panel.innerHTML = ""; panel.append(h("div", { class: "dev-wrap" }, ["could not load devices"])); return; }
+    j = await r.json();
+  } catch (e) { return; }
+  panel.innerHTML = "";
+  renderDevices(panel, j);
+}
+function deviceRow(d, kind) {
+  const isMe = device && d.deviceId === device.id;
+  const meta = (d.label ? d.label + " · " : "") + d.deviceId + (isMe ? " (this device)" : "");
+  const actions = [];
+  if (kind === "pending") {
+    actions.push(h("button", { onclick: () => approveDevice(d.deviceId) }, ["approve"]));
+  }
+  actions.push(h("button", { class: "danger", onclick: () => revokeDevice(d.deviceId) }, ["revoke"]));
+  return h("div", { class: "dev-row" }, [
+    h("div", { class: "dev-id mono" }, [meta]),
+    h("div", { class: "dev-actions" }, actions),
+  ]);
+}
+function renderDevices(panel, j) {
+  const admins = j.admins || [], pending = j.pending || [];
+  const adminRows = admins.length
+    ? admins.map((d) => deviceRow(d, "admin"))
+    : [h("div", { class: "ip" }, ["none"])];
+  const pendRows = pending.length
+    ? pending.map((d) => deviceRow(d, "pending"))
+    : [h("div", { class: "ip" }, ["no pending requests"])];
+  panel.append(h("div", { class: "dev-wrap" }, [
+    h("div", { class: "dev-col" }, [ h("div", { class: "dev-h" }, ["admins (" + admins.length + ")"]), ...adminRows ]),
+    h("div", { class: "dev-col" }, [ h("div", { class: "dev-h" }, ["pending (" + pending.length + ")"]), ...pendRows ]),
+  ]));
+}
+async function approveDevice(id) {
+  try { await api("/devices/approve", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deviceId: id }) }); }
+  catch (e) {}
+  loadDevices();
+}
+async function revokeDevice(id) {
+  try {
+    const r = await api("/devices/revoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deviceId: id }) });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      alert(j.error || "revoke failed");
+    }
+  } catch (e) {}
+  loadDevices();
+}
+
+async function boot() {
+  if (!device) device = await loadOrCreateDevice();
+  // Ask the server who we are: GET /me reports our role from the persisted device store and whether
+  // any admin exists yet. This proves device-key possession (key-valid) and picks the screen.
+  let me;
+  try {
+    const r = await api("/me");
+    if (!r.ok) { claimScreen("could not authenticate this device"); return; }
+    me = await r.json();
+  } catch (e) { claimScreen("could not reach the server"); return; }
+
+  if (me.role === "admin") {
+    renderShell();
+    loadDevices();
+    return;
+  }
+  if (!me.hasAdmins) { claimScreen(""); return; }
+  requestScreen("", me.role); // role is "pending" or "none"
+}
+
+boot();
+</script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+[package]
+name = "ce-auth"
+version = "0.1.0"
+edition = "2024"
+description = "ce-auth — the operator's reusable auth/SSO app for CE. Owns the operator's device registry and answers \"is this device the operator?\" for any app via a stateless /challenge + /verify relying-party API, plus a self-service device-management console. Light axum service that lives beside the relay."
+
+[[bin]]
+name = "ce-auth"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "signal", "fs"] }
+tower-http = { version = "0.5", features = ["cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ce-secrets-rs = { path = "../ce-secrets-rs" }
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"] }
+ce-secrets-rs = { path = "../ce-secrets-rs" }
+
+[profile.release]
+opt-level = 2
+strip = true
