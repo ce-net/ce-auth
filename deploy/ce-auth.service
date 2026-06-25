@@ -1,0 +1,40 @@
+[Unit]
+Description=ce-auth — mesh-native, capability-minting operator auth/SSO (serves the "ce-auth" mesh service + a thin operator console)
+After=network.target ce-relay.service
+Wants=ce-relay.service
+
+[Service]
+# ce-auth rides the co-located CE node for the mesh: it advertises the "ce-auth" service on the DHT and
+# answers challenge/verify verbs over libp2p (/ce/rpc/1, topic ce-auth/rpc). The node API token is read
+# from the default data dir (/root/.local/share/ce/api.token) by ce-rs since this runs as root on the relay.
+ExecStart=/opt/ce-auth/ce-auth
+WorkingDirectory=/opt/ce-auth
+
+# The local CE node this service attaches to for all mesh I/O.
+Environment=CE_NODE_URL=http://127.0.0.1:8844
+# Thin operator console (browser frontend only). Keep it bound locally / behind the edge; service-to-service
+# never uses HTTP. Cloudflare/nginx may proxy this for the operator UI if you choose to expose it.
+Environment=PORT=8972
+# Persistent state: devices.json (the operator device registry) + identity/ (the cap-root key when no seed).
+Environment=CE_AUTH_DATA_DIR=/opt/ce-auth/data
+
+# --- Secrets / stable identity (DO NOT hard-code; supply via a root-only EnvironmentFile) -----------------
+# CE_AUTH_SERVER_SECRET     stateless-nonce HMAC key. MUST be stable across restarts or in-flight challenges
+#                           break on restart. A per-boot random key is used if unset (warns in the log).
+# CE_AUTH_CAP_ROOT_SEED     64-hex 32-byte secret for the cap org-root key. Setting it pins ce-auth's capRoot
+#                           NodeId across restarts/replicas (relying apps trust THIS NodeId). If unset, a
+#                           per-instance key is generated under CE_AUTH_DATA_DIR/identity (capRoot then
+#                           changes if that dir is wiped) — fine for a single stable relay, but pin it for
+#                           multi-replica or reproducible roots.
+# CE_AUTH_CAP_TTL_SECS      minted-grant lifetime (default 600).
+# CE_AUTH_CAP_RESOURCE      resource scope of minted grants (default *).
+# CE_AUTH_ADMIN_DEVICES     optional one-time bootstrap seed deviceId:ecdsaPubB64url,... (else first browser
+#                           to open the console claims operator via TOFU).
+EnvironmentFile=-/etc/ce-auth/ce-auth.env
+
+Restart=always
+RestartSec=2
+User=root
+
+[Install]
+WantedBy=multi-user.target
