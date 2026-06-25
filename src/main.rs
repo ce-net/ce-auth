@@ -25,10 +25,10 @@ use serde_json::{Value, json};
 use tower_http::cors::CorsLayer;
 
 use ce_auth::auth;
-use ce_auth::bridge::CapBridge;
+use ce_iam::bridge::CapBridge;
 use ce_auth::secrets::SecretStore;
 use ce_auth::service::{self, MeshState};
-use ce_auth::store::{self, DeviceStore};
+use ce_iam::device::{self as store, DeviceStore};
 
 const CONSOLE_HTML: &str = include_str!("console.html");
 

@@ -24,7 +24,5 @@
 //! ce-auth's own CE identity (the org root apps trust). See [`bridge`] for the precise design.
 
 pub mod auth;
-pub mod bridge;
 pub mod secrets;
 pub mod service;
-pub mod store;

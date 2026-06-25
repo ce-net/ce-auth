@@ -35,9 +35,9 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 use crate::auth::{self, AuthError};
-use crate::bridge::CapBridge;
+use ce_iam::bridge::CapBridge;
 use crate::secrets::SecretStore;
-use crate::store::{self, DeviceStore, RevokeOutcome};
+use ce_iam::device::{self as store, DeviceStore, RevokeOutcome};
 
 /// The pinned mesh service name ce-auth advertises and relying parties `locate`.
 pub const SERVICE_NAME: &str = "ce-auth";
@@ -424,7 +424,7 @@ fn now_unix_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::{ABILITY_OPERATOR, ability_for_aud};
+    use ce_iam::bridge::{ABILITY_OPERATOR, ability_for_aud};
     use ce_iam::{Iam, Principal};
     use ce_identity::Identity;
     use ce_secrets_rs::{DeviceKey, sign_challenge};
