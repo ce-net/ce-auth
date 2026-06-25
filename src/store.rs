@@ -27,6 +27,12 @@ pub const ROLE_PENDING: &str = "pending";
 /// (`base64url(04||x||y)`) the console derives from its WebCrypto key — the exact string accepted by
 /// `auth::ecdsa_pub_from_compact`, so we can reconstruct the verifying key to authenticate the device
 /// on every request.
+///
+/// THE BRIDGE: `node_id` is the device's **CE NodeId** (Ed25519, 64-hex). ce-auth lives in two
+/// identity worlds — a device authenticates with its P-256 ce-secrets key (proof of possession), but
+/// ce-cap capabilities name principals by Ed25519 NodeId. We bridge them by binding each enrolled
+/// device to a CE NodeId at enroll time; on a valid P-256 proof ce-auth mints a cap FOR that NodeId.
+/// A device with no registered NodeId can authenticate but cannot be minted a cap (no principal).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Device {
     /// Compact ECDSA SEC1 public point, base64url(no-pad) of `04 || x(32) || y(32)`.
@@ -38,6 +44,10 @@ pub struct Device {
     pub label: String,
     #[serde(default)]
     pub added_ts: u64,
+    /// The device's CE NodeId (Ed25519, 64-hex) — the ce-cap principal a minted grant is bound to.
+    /// Empty until the device registers one (at claim/request, or via `set_node_id`).
+    #[serde(default, rename = "nodeId", skip_serializing_if = "String::is_empty")]
+    pub node_id: String,
 }
 
 /// The persisted, self-managed device store (`devices.json` in the data dir).
@@ -84,6 +94,7 @@ impl DeviceStore {
                             role: ROLE_ADMIN.to_string(),
                             label: "env-seed".to_string(),
                             added_ts: now_unix_secs(),
+                            node_id: String::new(),
                         },
                     );
                     changed = true;
@@ -163,9 +174,10 @@ impl DeviceStore {
         }
     }
 
-    /// TOFU first claim: if there are ZERO admins, make `device_id` an admin (recording its `pub`).
-    /// Returns `Ok(true)` on success, `Ok(false)` if an admin already exists (caller -> 409).
-    pub fn claim(&self, device_id: &str, pub_b64: &str) -> Result<bool> {
+    /// TOFU first claim: if there are ZERO admins, make `device_id` an admin (recording its `pub`
+    /// and its CE NodeId for the cap bridge). Returns `Ok(true)` on success, `Ok(false)` if an admin
+    /// already exists (caller -> 409). `node_id` may be empty (the device registers it later).
+    pub fn claim(&self, device_id: &str, pub_b64: &str, node_id: &str) -> Result<bool> {
         {
             let mut g = self
                 .inner
@@ -181,6 +193,7 @@ impl DeviceStore {
                     role: ROLE_ADMIN.to_string(),
                     label: "claimed".to_string(),
                     added_ts: now_unix_secs(),
+                    node_id: node_id.to_string(),
                 },
             );
         }
@@ -188,10 +201,17 @@ impl DeviceStore {
         Ok(true)
     }
 
-    /// Record a device as `role=pending` with its compact pub and optional label. Idempotent: a
-    /// device already present (admin or pending) is left as-is except a pending device may refresh
-    /// its label/pub. Returns the resulting role.
-    pub fn request(&self, device_id: &str, pub_b64: &str, label: &str) -> Result<&'static str> {
+    /// Record a device as `role=pending` with its compact pub, CE NodeId (for the cap bridge), and
+    /// optional label. Idempotent: a device already present (admin or pending) is left as-is except a
+    /// pending device may refresh its label/pub/node_id. Returns the resulting role. `node_id` may be
+    /// empty.
+    pub fn request(
+        &self,
+        device_id: &str,
+        pub_b64: &str,
+        node_id: &str,
+        label: &str,
+    ) -> Result<&'static str> {
         let role;
         {
             let mut g = self
@@ -200,13 +220,21 @@ impl DeviceStore {
                 .map_err(|_| anyhow::anyhow!("device store poisoned"))?;
             match g.get_mut(device_id) {
                 Some(d) if d.role == ROLE_ADMIN => {
+                    // An admin re-enrolling may still register/refresh its CE NodeId (the cap
+                    // principal) without changing role.
+                    if !node_id.is_empty() {
+                        d.node_id = node_id.to_string();
+                    }
                     role = ROLE_ADMIN;
                 }
                 Some(d) => {
-                    // already pending — refresh its advertised pub/label
+                    // already pending — refresh its advertised pub/label/node_id
                     d.pub_b64 = pub_b64.to_string();
                     if !label.is_empty() {
                         d.label = label.to_string();
+                    }
+                    if !node_id.is_empty() {
+                        d.node_id = node_id.to_string();
                     }
                     role = ROLE_PENDING;
                 }
@@ -218,6 +246,7 @@ impl DeviceStore {
                             role: ROLE_PENDING.to_string(),
                             label: label.to_string(),
                             added_ts: now_unix_secs(),
+                            node_id: node_id.to_string(),
                         },
                     );
                     role = ROLE_PENDING;
@@ -226,6 +255,43 @@ impl DeviceStore {
         }
         self.persist()?;
         Ok(role)
+    }
+
+    /// Bind (or rebind) a device's CE NodeId — the ce-cap principal a minted grant targets. A device
+    /// already enrolled (admin or pending) can register/refresh its NodeId without changing its role.
+    /// Returns `Ok(true)` if the device exists and was updated, `Ok(false)` if unknown.
+    pub fn set_node_id(&self, device_id: &str, node_id: &str) -> Result<bool> {
+        let updated;
+        {
+            let mut g = self
+                .inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("device store poisoned"))?;
+            match g.get_mut(device_id) {
+                Some(d) => {
+                    d.node_id = node_id.to_string();
+                    updated = true;
+                }
+                None => return Ok(false),
+            }
+        }
+        if updated {
+            self.persist()?;
+        }
+        Ok(updated)
+    }
+
+    /// The device's registered CE NodeId (Ed25519, 64-hex), or `None` if it has none yet. This is the
+    /// ce-cap principal a minted grant binds to (the bridge between the P-256 device id and the
+    /// Ed25519 cap world).
+    pub fn node_id_of(&self, device_id: &str) -> Option<String> {
+        match self.inner.lock() {
+            Ok(g) => g
+                .get(device_id)
+                .map(|d| d.node_id.clone())
+                .filter(|s| !s.is_empty()),
+            Err(_) => None,
+        }
     }
 
     /// Promote a pending device to admin. Returns `Ok(true)` if a pending device was promoted,
@@ -327,15 +393,19 @@ mod tests {
     const PUB_A: &str = "BEXiMyFP2gVoMNpEQGuNi_wGYkJomGG-EbL3Rk8HUfo5oPRQppQEcMfMJknsjaQNU2uZc4Hz7GZ9T_Bf0J2L4KM";
     const PUB_B: &str = "BF5pM_MXcWTd_QhLuLeN-0Uz_c6kqXjfxxD1hZflnL4nWHvWLOzDWyZmUhG8nnISc8dN5Gol-Cyfm1YaJpIvUWU";
 
+    const NODE_A: &str = "aa";
+    const NODE_B: &str = "bb";
+
     #[test]
     fn claim_then_second_claim_blocked() {
         let dir = temp_dir();
         let store = DeviceStore::open(&dir, &[]).unwrap();
         assert!(!store.has_admins());
-        assert!(store.claim("dev-a", PUB_A).unwrap());
+        assert!(store.claim("dev-a", PUB_A, &NODE_A.repeat(32)).unwrap());
         assert!(store.is_admin("dev-a"));
+        assert_eq!(store.node_id_of("dev-a"), Some(NODE_A.repeat(32)));
         // A second claim is blocked once an admin exists.
-        assert!(!store.claim("dev-b", PUB_B).unwrap());
+        assert!(!store.claim("dev-b", PUB_B, &NODE_B.repeat(32)).unwrap());
         assert_eq!(store.role_of("dev-b"), "none");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -344,8 +414,12 @@ mod tests {
     fn request_approve_revoke_cycle() {
         let dir = temp_dir();
         let store = DeviceStore::open(&dir, &[("dev-a".into(), PUB_A.into())]).unwrap();
-        assert_eq!(store.request("dev-b", PUB_B, "phone").unwrap(), ROLE_PENDING);
+        assert_eq!(
+            store.request("dev-b", PUB_B, &NODE_B.repeat(32), "phone").unwrap(),
+            ROLE_PENDING
+        );
         assert_eq!(store.role_of("dev-b"), "pending");
+        assert_eq!(store.node_id_of("dev-b"), Some(NODE_B.repeat(32)));
         assert!(store.approve("dev-b").unwrap());
         assert!(store.is_admin("dev-b"));
         assert_eq!(store.revoke("dev-b").unwrap(), RevokeOutcome::Removed);
@@ -357,6 +431,7 @@ mod tests {
     fn cannot_revoke_last_admin() {
         let dir = temp_dir();
         let store = DeviceStore::open(&dir, &[("dev-a".into(), PUB_A.into())]).unwrap();
+        let _ = (NODE_A, NODE_B);
         assert_eq!(store.revoke("dev-a").unwrap(), RevokeOutcome::LastAdmin);
         assert!(store.is_admin("dev-a"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -367,7 +442,7 @@ mod tests {
         let dir = temp_dir();
         {
             let store = DeviceStore::open(&dir, &[("dev-a".into(), PUB_A.into())]).unwrap();
-            store.request("dev-b", PUB_B, "x").unwrap();
+            store.request("dev-b", PUB_B, "", "x").unwrap();
             store.approve("dev-b").unwrap();
         }
         let store = DeviceStore::open(&dir, &[]).unwrap();
