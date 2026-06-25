@@ -290,6 +290,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ce-cap",
+ "ce-iam-core",
  "ce-identity",
  "ce-rs",
  "clap",
@@ -299,6 +300,19 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "ce-iam-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ce-cap",
+ "ce-identity",
+ "ce-secrets-rs",
+ "hex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -341,6 +355,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "p256",
+ "rand_core 0.6.4",
  "serde",
  "serde_json",
  "sha2",

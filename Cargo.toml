@@ -26,7 +26,8 @@ hex = "0.4"
 # Device auth (ce-secrets P-256 challenge-response).
 ce-secrets-rs = { path = "../ce-secrets-rs" }
 # The cap bridge: mint/attenuate/verify attenuating ce-cap chains via the IAM tier.
-ce-iam = { path = "../ce-iam" }
+# ce-iam is a workspace; the full-IAM package (with the device->cap bridge) is crates/ce-iam.
+ce-iam = { path = "../ce-iam/crates/ce-iam" }
 ce-cap = { path = "../ce/crates/ce-cap" }
 ce-identity = { path = "../ce/crates/ce-identity" }
 # Mesh-native serve/locate + node client (the substrate this service rides).
