@@ -6,7 +6,7 @@
 //! dispatches, runs the same ce-secrets device-auth as the console, and replies with JSON.
 //!
 //! The defining verb is **`verify`**: on a valid enrolled-admin device proof it MINTS an attenuating
-//! ce-cap grant (the bridge, see [`crate::bridge`]) and returns the token. A relying party then
+//! ce-cap grant (the bridge, see [`ce_iam::bridge`]) and returns the token. A relying party then
 //! verifies that token OFFLINE with ce-cap — it never calls `verify` again per request.
 //!
 //! ## Verbs
