@@ -107,6 +107,7 @@ requests access and an existing admin approves it in-console. No env editing, no
 | `CE_AUTH_DATA_DIR` | `./ce-auth-data` | data dir; `devices.json` + the cap-root `identity/` |
 | `CE_AUTH_SERVER_SECRET` | per-boot random | stateless-nonce HMAC key. Set it for stable verification across restarts. |
 | `CE_AUTH_ADMIN_DEVICES` | — | one-time bootstrap seed: `deviceId:ecdsaPubB64url,...` (pub = base64url(no-pad) of the 65-byte SEC1 point `04‖x‖y`) |
+| `CE_AUTH_SECRETS` | — | optional seed for the `secret` verb's `SecretStore`: `name=value,...` operator secrets served to authorized devices |
 | `CE_AUTH_CAP_ROOT_SEED` | per-instance key | 64-hex 32-byte secret for the cap org-root. Share across replicas to mint under one root; else a per-instance identity in `<data_dir>/identity`. |
 | `CE_AUTH_CAP_RESOURCE` | `*` | resource scope of minted grants (`*`, `tag:<t>`, `all-of:a,b`, or a node id) |
 | `CE_AUTH_CAP_TTL_SECS` | `600` | minted-grant lifetime in seconds |
@@ -118,7 +119,7 @@ already present, after which the persisted file is the source of truth.
 
 ```bash
 cargo build
-cargo test                 # 41 lib + 2 bin unit tests, all offline
+cargo test                 # 30 lib + 2 bin unit tests, all offline
 cargo run                  # serves the mesh service + console on :8972
 ```
 
@@ -133,3 +134,8 @@ cargo run                  # serves the mesh service + console on :8972
 - **`ce-identity`**: `Identity::{from_secret_bytes, load_or_generate, node_id, node_id_hex}`.
 - **`ce-secrets-rs`**: `sign_challenge`, `verify_auth`, `make_nonce`, `check_nonce` (the P-256 device
   proof).
+
+## License
+
+AGPL-3.0-only. A commercial license is also available — see [`LICENSING.md`](./LICENSING.md)
+and [`COMMERCIAL-LICENSE.md`](./COMMERCIAL-LICENSE.md).

@@ -16,12 +16,13 @@
 //!    device-management console (the human frontend). It carries the *same* verbs as the mesh
 //!    service, but only for the browser operator UI; service-to-service never uses it.
 //!
-//! ## The cap bridge ([`bridge`])
+//! ## The cap bridge (`ce_iam::bridge`)
 //!
 //! ce-auth bridges two identity worlds: an enrolled device is a **P-256 ce-secrets** key (the
 //! authenticator), while ce-cap principals are **Ed25519 CE NodeIds**. Each enrolled device registers
 //! its CE NodeId at enroll time; on a valid P-256 proof ce-auth mints a cap FOR that NodeId, rooted at
-//! ce-auth's own CE identity (the org root apps trust). See [`bridge`] for the precise design.
+//! ce-auth's own CE identity (the org root apps trust). The minting itself lives in `ce_iam::bridge`
+//! (`CapBridge`); see that crate for the precise design.
 
 pub mod auth;
 pub mod secrets;

@@ -2,6 +2,7 @@
 name = "ce-auth"
 version = "0.1.0"
 edition = "2024"
+license = "AGPL-3.0-only"
 description = "ce-auth — the operator's mesh-native, capability-minting auth/SSO service for CE. Owns the operator's device registry and answers \"is this device the operator?\" over the mesh; on a valid enrolled-device proof it MINTS an attenuating ce-cap grant (via ce-iam) bound to the device's CE NodeId + the requesting app audience, which relying-party apps verify OFFLINE with ce-cap. A thin local HTTP server serves only the operator console."
 
 [[bin]]
