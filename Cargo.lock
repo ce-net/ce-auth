@@ -256,8 +256,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
- "ce-cap",
  "ce-iam",
+ "ce-iam-core",
  "ce-identity",
  "ce-rs",
  "ce-secrets-rs",

@@ -28,7 +28,7 @@ ce-secrets-rs = { path = "../ce-secrets-rs" }
 # The cap bridge: mint/attenuate/verify attenuating ce-cap chains via the IAM tier.
 # ce-iam is a workspace; the full-IAM package (with the device->cap bridge) is crates/ce-iam.
 ce-iam = { path = "../ce-iam/crates/ce-iam" }
-ce-cap = { path = "../ce/crates/ce-cap" }
+ce-iam-core = { path = "../ce-iam/crates/ce-iam-core" }
 ce-identity = { path = "../ce/crates/ce-identity" }
 # Mesh-native serve/locate + node client (the substrate this service rides).
 ce-rs = { path = "../ce-rs", features = ["serve", "locate"] }
