@@ -25,14 +25,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 hex = "0.4"
 
 # Device auth (ce-secrets P-256 challenge-response).
-ce-secrets-rs = { path = "../ce-secrets-rs" }
+ce-secrets-rs = { git = "https://github.com/ce-net/ce-secrets-rs" }
 # The cap bridge: mint/attenuate/verify attenuating ce-cap chains via the IAM tier.
 # ce-iam is a workspace; the full-IAM package (with the device->cap bridge) is crates/ce-iam.
-ce-iam = { path = "../ce-iam/crates/ce-iam" }
-ce-iam-core = { path = "../ce-iam/crates/ce-iam-core" }
-ce-identity = { path = "../ce/crates/ce-identity" }
+ce-iam = { git = "https://github.com/ce-net/ce-iam" }
+ce-iam-core = { git = "https://github.com/ce-net/ce-iam" }
+ce-identity = { git = "https://github.com/ce-net/ce" }
 # Mesh-native serve/locate + node client (the substrate this service rides).
-ce-rs = { path = "../ce-rs", features = ["serve", "locate"] }
+ce-rs = { git = "https://github.com/ce-net/ce-rs", features = ["serve", "locate"] }
 directories = "5"
 
 [dev-dependencies]
